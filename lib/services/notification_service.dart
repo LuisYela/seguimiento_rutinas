@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import '../pages/notificacion_actividad_page.dart';
 
 import 'dart:ui' show DartPluginRegistrant;
+import 'dart:io' show Platform;
 
 class NotificationService {
   NotificationService._();
@@ -23,6 +24,11 @@ class NotificationService {
   bool _inicializado = false;
 
   static const NotificationDetails _detalles = NotificationDetails(
+    iOS: DarwinNotificationDetails(
+      presentAlert: true,
+      presentBadge: true,
+      presentSound: true,
+    ),
     android: AndroidNotificationDetails(
       'recordatorios_rutinas',
       'Recordatorios de rutinas',
@@ -42,9 +48,14 @@ class NotificationService {
     final zona = await FlutterTimezone.getLocalTimezone();
     tz.setLocalLocation(tz.getLocation(zona.identifier));
 
-    // Inicializar las notificaciones de Android.
+    // Inicialización multiplataforma sin pedir permisos al arrancar.
     const configuracion = InitializationSettings(
       android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+      iOS: DarwinInitializationSettings(
+        requestAlertPermission: false,
+        requestBadgePermission: false,
+        requestSoundPermission: false,
+      ),
     );
 
     await _plugin.initialize(
@@ -66,6 +77,16 @@ class NotificationService {
 
   Future<bool> solicitarPermisoNotificaciones() async {
     await inicializar();
+
+    if (Platform.isIOS) {
+      final ios = _plugin.resolvePlatformSpecificImplementation<
+          IOSFlutterLocalNotificationsPlugin>();
+      return await ios?.requestPermissions(
+            alert: true,
+            badge: true,
+            sound: true,
+          ) ?? false;
+    }
 
     final android = _plugin
         .resolvePlatformSpecificImplementation<
@@ -89,15 +110,21 @@ class NotificationService {
   Future<bool> programarPrueba() async {
     await inicializar();
 
-    final android = _plugin
-        .resolvePlatformSpecificImplementation<
-          AndroidFlutterLocalNotificationsPlugin
-        >();
-
-    // Solicitar autorización para programar alarmas exactas.
-    final autorizado = await android?.requestExactAlarmsPermission() ?? false;
-
-    if (!autorizado) return false;
+    if (Platform.isIOS) {
+      final permisos = await _plugin
+          .resolvePlatformSpecificImplementation<
+              IOSFlutterLocalNotificationsPlugin>()
+          ?.checkPermissions();
+      if (permisos?.isEnabled != true) return false;
+    } else {
+      final android = _plugin
+          .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin
+          >();
+      // Solo Android necesita autorización de alarmas exactas.
+      final autorizado = await android?.requestExactAlarmsPermission() ?? false;
+      if (!autorizado) return false;
+    }
 
     final fechaProgramada = tz.TZDateTime.now(tz.local)
         .add(const Duration(minutes: 1));
@@ -126,6 +153,14 @@ class NotificationService {
   Future<bool> permisosProgramacionActivos() async {
     await inicializar();
 
+    if (Platform.isIOS) {
+      final permisos = await _plugin
+          .resolvePlatformSpecificImplementation<
+              IOSFlutterLocalNotificationsPlugin>()
+          ?.checkPermissions();
+      return permisos?.isEnabled ?? false;
+    }
+
     final android = _plugin
         .resolvePlatformSpecificImplementation<
           AndroidFlutterLocalNotificationsPlugin
@@ -144,6 +179,8 @@ class NotificationService {
     final notificaciones = await solicitarPermisoNotificaciones();
 
     if (!notificaciones) return false;
+
+    if (Platform.isIOS) return true;
 
     final android = _plugin
         .resolvePlatformSpecificImplementation<
@@ -240,7 +277,7 @@ class NotificationService {
     await _plugin.cancel(id: _idNotificacion(recordatorioId));
   }
 
-  // Hace coincidir la programación de Android
+  // Hace coincidir la programación local
   // con los recordatorios guardados en SQLite.
   Future<void> sincronizarRecordatorios() async {
     await inicializar();
