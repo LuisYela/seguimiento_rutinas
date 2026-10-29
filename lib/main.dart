@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import 'pages/rutinas_page.dart';
@@ -7,16 +9,29 @@ import 'pages/metricas_page.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await NotificationService.instance.inicializar();
-  try {
-    await NotificationService.instance.sincronizarRecordatorios();
-  } catch (e) {
-    debugPrint('No se pudieron sincronizar los recordatorios: $e');
+
+  // Diagnóstico temporal para iOS:
+  // evitar la inicialización de notificaciones al arrancar.
+  if (Platform.isAndroid) {
+    await NotificationService.instance.inicializar();
+
+    try {
+      await NotificationService.instance.sincronizarRecordatorios();
+    } catch (e) {
+      debugPrint('No se pudieron sincronizar los recordatorios: $e');
+    }
   }
+
+  // Iniciar la interfaz Flutter.
   runApp(const SeguimientoRutinasApp());
-  WidgetsBinding.instance.addPostFrameCallback((_) {
-    NotificationService.instance.abrirNotificacionInicial();
-  });
+
+  // Procesar la notificación inicial solamente en Android
+  // mientras investigamos el problema de iOS.
+  if (Platform.isAndroid) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      NotificationService.instance.abrirNotificacionInicial();
+    });
+  }
 }
 
 class SeguimientoRutinasApp extends StatelessWidget {
