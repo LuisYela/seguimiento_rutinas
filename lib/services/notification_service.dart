@@ -23,8 +23,13 @@ class NotificationService {
 
   bool _inicializado = false;
 
+  static const String _categoriaIos = 'acciones_cumplimiento_v1';
+  static const String _accionAbrirActividad = 'abrir_actividad';
+  static const String _accionOmitida = 'cumplimiento_omitido';
+
   static const NotificationDetails _detalles = NotificationDetails(
     iOS: DarwinNotificationDetails(
+      categoryIdentifier: _categoriaIos,
       presentAlert: true,
       presentBadge: true,
       presentSound: true,
@@ -49,23 +54,47 @@ class NotificationService {
     tz.setLocalLocation(tz.getLocation(zona.identifier));
 
     // Inicialización multiplataforma sin pedir permisos al arrancar.
-    const configuracion = InitializationSettings(
+    final configuracion = InitializationSettings(
       android: AndroidInitializationSettings('@mipmap/ic_launcher'),
       iOS: DarwinInitializationSettings(
         requestAlertPermission: false,
         requestBadgePermission: false,
         requestSoundPermission: false,
+        notificationCategories: <DarwinNotificationCategory>[
+          DarwinNotificationCategory(
+            _categoriaIos,
+            actions: <DarwinNotificationAction>[
+              DarwinNotificationAction.plain(
+                _accionAbrirActividad,
+                'Abrir actividad',
+                options: <DarwinNotificationActionOption>{
+                  DarwinNotificationActionOption.foreground,
+                },
+              ),
+              DarwinNotificationAction.plain(_accionOmitida, 'Omitir'),
+            ],
+          ),
+        ],
       ),
     );
 
     await _plugin.initialize(
       settings: configuracion,
-      onDidReceiveNotificationResponse: (respuesta) {
+      onDidReceiveNotificationResponse: (respuesta) async {
         if (respuesta.notificationResponseType ==
             NotificationResponseType.notificationDismissed) {
           return;
         }
-
+        // Abrir la pantalla de actividad para confirmar el cumplimiento
+        // y permitir registrar métricas. No marcar automáticamente.
+        if (respuesta.actionId == _accionAbrirActividad) {
+          _abrirDesdePayload(respuesta.payload);
+          return;
+        }
+        if (respuesta.actionId == _accionOmitida) {
+          await procesarAccionCumplimiento(respuesta);
+          return;
+        }
         _abrirDesdePayload(respuesta.payload);
       },
       onDidReceiveBackgroundNotificationResponse:
@@ -79,13 +108,16 @@ class NotificationService {
     await inicializar();
 
     if (Platform.isIOS) {
-      final ios = _plugin.resolvePlatformSpecificImplementation<
-          IOSFlutterLocalNotificationsPlugin>();
+      final ios = _plugin
+          .resolvePlatformSpecificImplementation<
+            IOSFlutterLocalNotificationsPlugin
+          >();
       return await ios?.requestPermissions(
             alert: true,
             badge: true,
             sound: true,
-          ) ?? false;
+          ) ??
+          false;
     }
 
     final android = _plugin
@@ -113,7 +145,8 @@ class NotificationService {
     if (Platform.isIOS) {
       final permisos = await _plugin
           .resolvePlatformSpecificImplementation<
-              IOSFlutterLocalNotificationsPlugin>()
+            IOSFlutterLocalNotificationsPlugin
+          >()
           ?.checkPermissions();
       if (permisos?.isEnabled != true) return false;
     } else {
@@ -156,7 +189,8 @@ class NotificationService {
     if (Platform.isIOS) {
       final permisos = await _plugin
           .resolvePlatformSpecificImplementation<
-              IOSFlutterLocalNotificationsPlugin>()
+            IOSFlutterLocalNotificationsPlugin
+          >()
           ?.checkPermissions();
       return permisos?.isEnabled ?? false;
     }
@@ -374,10 +408,12 @@ class NotificationService {
 Future<void> procesarNotificacionEnSegundoPlano(
   NotificationResponse respuesta,
 ) async {
-  if (respuesta.notificationResponseType !=
-      NotificationResponseType.notificationDismissed) {
-    return;
-  }
+  final esDescarteAndroid =
+      respuesta.notificationResponseType ==
+      NotificationResponseType.notificationDismissed;
+  final esAccionIosOmitir =
+      respuesta.actionId == NotificationService._accionOmitida;
+  if (!esDescarteAndroid && !esAccionIosOmitir) return;
 
   final payload = respuesta.payload ?? '';
 
@@ -393,6 +429,21 @@ Future<void> procesarNotificacionEnSegundoPlano(
 
     await AppDatabase.instance.registrarNotificacionDescartada(recordatorioId);
   } catch (e) {
-    debugPrint('Error al registrar descarte: $e');
+    debugPrint('Error al registrar acción de notificación: $e');
+  }
+}
+
+// Permite procesar las acciones también si la app está abierta.
+Future<void> procesarAccionCumplimiento(NotificationResponse respuesta) async {
+  final match = RegExp(r'^recordatorio:(\d+):actividad:(\d+)$')
+      .firstMatch(respuesta.payload ?? '');
+  if (match == null) return;
+  final id = int.parse(match.group(1)!);
+  try {
+    if (respuesta.actionId == NotificationService._accionOmitida) {
+      await AppDatabase.instance.registrarNotificacionDescartada(id);
+    }
+  } catch (e) {
+    debugPrint('Error al registrar cumplimiento desde aviso: $e');
   }
 }
